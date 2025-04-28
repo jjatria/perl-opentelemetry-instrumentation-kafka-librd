@@ -1,0 +1,311 @@
+=encoding utf8
+
+=head1 NAME
+
+OpenTelemetry::Instrumentation::Kafka::Librd - OpenTelemetry instrumentation for Kafka::Librd
+
+=head1 SYNOPSIS
+
+    use OpenTelemetry::Instrumentation 'Kafka::Librd';
+
+    # Or pass options to the instrumentation
+    use OpenTelemetry::Instrumentation 'Kafka::Librd' => {
+        key_uses_schema_framing => 1,
+        create_poll_span        => 0,
+    };
+
+    my $kafka = Kafka::Librd->new( ... );
+
+    ...
+
+    while(1) {
+        my $msg = $kafka->consumer_poll(1000) or next;
+
+        # Process message
+
+        $kafka->commit_message($msg);
+    }
+
+=head1 DESCRIPTION
+
+This module can be used to instrument code using L<Kafka::Librd> to generate
+trace data using the L<OpenTelemetry> API. See L<OpenTelemetry::Instrumentation>
+for more details.
+
+The instrumentation provided by this module wraps around several methods in
+the Kafka::Librd classes to try to automatically generate as much telemetry
+data as possible. See below for details on what methods are wrapped and
+details about how the data they generate.
+
+=head2 Configuration
+
+This instrumentation accepts the following configuration parameters:
+
+=over
+
+=item create_poll_span
+
+If set to a true value, a span will be created wrapping around the
+C<consumer_poll> method. This key allows this to be disabled since in most
+consumer applications this method will be called repeatedly, and it may result
+in noisy telemetry data.
+
+Defaults to a true value.
+
+=item create_process_span
+
+If set to a true value, this instrumentation will create a span that wraps
+around the code processing the message returned by C<consumer_poll>.
+
+Defaults to a true value.
+
+=item key_processor
+
+If set to a sub reference, this will be called whenever the code in this
+instrumentation wants to access a message's key. The key processor will
+receive as its only argument the message key as it was received in the
+message from Kafka. The processor is expected to return a value that is
+suitable to be used as the key when generating telemetry.
+
+The user is responsible for making sure the processor does not die. This
+instrumentation includes no protections against this.
+
+This option defaults to an undefined value, meaning no processor is used.
+
+=item key_uses_schema_framing
+
+Kafka-based applications that use the Confluent Schema Registry (or an
+equivalent solution) will sometimes produce messages that employ what is
+called "schema framing". When using it, the first five bytes of the message
+payload and/or key will not be part of the actual data, but will encode
+information about the schema that was used to encode that particular datum.
+
+Since this instrumentation will in some cases attach the message key to a
+span's attributes, this option can be used to strip these five-byte headers
+from the key before storing it in the generated span.
+
+This option is incompatible with the L</key_processor> option, since it is
+in effect a shortcut for installing a processor that strips the schema
+framing.
+
+Defaults to a false value.
+
+=back
+
+=head1 WRAPPED METHODS
+
+=head2 Kafka::Librd::consumer_poll
+
+By default, this instrumentation will generate two spans when calling
+L<Kafka::Librd/consumer_poll>.
+
+=head3 The poll span
+
+This span will wrap around the call to "consumer_poll" itself. It can be
+disabled by setting C<create_poll_span> to a false value on installation, as
+described above.
+
+If created, this span will be named C<poll> and will include the following
+attributes:
+
+=over
+
+=item C<messaging.system>
+
+Set to C<kafka>.
+
+=item C<messaging.operation.name>
+
+Set to C<poll>.
+
+=item C<messaging.operation.type>
+
+Set to C<receive>.
+
+=back
+
+=head3 The process span
+
+This span aims to wrap around the code processing a message. In practice, this
+will be a span that starts after C<consumer_poll> receives a message, and ends
+the next time C<consumer_poll> is called. This should work as expected in most
+cases, but since this span will in effect be capturing code that runs in an
+outer scope, this might not always be desired. If so, this can be disabled
+by setting C<create_process_span> to a false value during installation, as
+described above.
+
+If created, this span will be named C<process_$topic>, where C<$topic> is the
+topic the message was received from. If the version of L<Kafka::Librd>
+supports reading a message's headers, this instrumentation will extract
+propagation data from the headers so the "process" span can link to the traces
+that produced the message being processed. The span will include the following
+attributes:
+
+=over
+
+=item C<messaging.system>
+
+Set to C<kafka>.
+
+=item C<messaging.operation.name>
+
+Set to C<process>.
+
+=item C<messaging.operation.type>
+
+Set to C<process>.
+
+=item C<messaging.destination.name>
+
+Set to the value returned by L<Kafka::Librd::Message/topic>.
+
+=item C<messaging.kafka.offset>
+
+Set to the value returned by L<Kafka::Librd::Message/offset>.
+
+=item C<messaging.destination.partition.id>
+
+Set to the value returned by L<Kafka::Librd::Message/partition> if this
+returns a defined value.
+
+=item C<messaging.kafka.message.key>
+
+Set to the value returned by L<Kafka::Librd::Message/key>, possibly after
+being processed by the L</key_processor> if one was set on installation.
+
+=back
+
+=head2 Kafka::Librd::commit_message
+
+When calling L<Kafka::Librd/commit_message>, this instrumentation will create
+a "settle" span with the name C<commit_$topic>, where C<$topic> is the topic
+the message was received from. If the version of L<Kafka::Librd> supports
+reading headers, these will be used to read propagation data, and the span
+will be linked to the spans that produced the message being committed.
+
+The span will be created with the attributes described below:
+
+=over
+
+=item C<messaging.system>
+
+Set to C<kafka>.
+
+=item C<messaging.operation.name>
+
+Set to C<commit>.
+
+=item C<messaging.operation.type>
+
+Set to C<settle>.
+
+=item C<messaging.destination.name>
+
+Set to the value returned by L<Kafka::Librd::Message/topic>.
+
+=item C<messaging.destination.partition.id>
+
+Set to the value returned by L<Kafka::Librd::Message/partition> if this
+returns a defined value.
+
+=back
+
+=head2 Kafka::Librd::producev
+
+When calling L<Kafka::Librd/producev>, this instrumentation will create
+a "send" span with the name C<send_$topic>, where C<$topic> is the topic
+the message is being sent to. Since the message headers will be modified
+to inject propagation data from the current context, this may result in
+some headers being replaced. The keys that will be used will depend on the
+propagators you've got configured.
+
+The span will be created with the attributes described below:
+
+=over
+
+=item C<messaging.system>
+
+Set to C<kafka>.
+
+=item C<messaging.operation.name>
+
+Set to C<send>.
+
+=item C<messaging.operation.type>
+
+Set to C<send>.
+
+=item C<messaging.destination.name>
+
+Set to the value passed as the C<topic> parameter.
+
+=item C<messaging.destination.partition.id>
+
+Set to the value passed as the C<partition> parameter, if set to a defined
+value.
+
+=item C<messaging.kafka.message.key>
+
+Set to the value passed as the C<key> parameter, if set to a defined value,
+possibly after being processed by the L</key_processor> if one was set on
+installation.
+
+=back
+
+=head2 Kafka::Librd::Topic::produce
+
+When calling L<Kafka::Librd::Topic/produce>, this instrumentation will create
+a "send" span with the name C<send>. Ideally this should include the topic
+name, but at the time of writing L<Kafka::Librd::Topic> does not provide a way
+to retrieve the name of the topic that it points to.
+
+Since this method does not support setting headers, no propagation data will
+be added. If supported, please consider using L<Kafka::Librd/producev> instead.
+
+The span will be created with the attributes described below:
+
+=over
+
+=item C<messaging.system>
+
+Set to C<kafka>.
+
+=item C<messaging.operation.name>
+
+Set to C<send>.
+
+=item C<messaging.operation.type>
+
+Set to C<send>.
+
+=item C<messaging.destination.partition.id>
+
+Set to the value passed as the C<partition> parameter, if set to a defined
+value.
+
+=item C<messaging.kafka.message.key>
+
+Set to the value passed as the C<key> parameter, if set to a defined value,
+possibly after being processed by the L</key_processor> if one was set on
+installation.
+
+=back
+
+=head1 SEE ALSO
+
+=over
+
+=item L<Kafka::Librd>
+
+=item L<OpenTelemetry>
+
+=item L<OpenTelemetry::Instrumentation>
+
+=back
+
+=head1 COPYRIGHT
+
+This software is copyright (c) 2025 by José Joaquín Atria.
+
+This is free software; you can redistribute it and/or modify it under the same
+terms as the Perl 5 programming language system itself.

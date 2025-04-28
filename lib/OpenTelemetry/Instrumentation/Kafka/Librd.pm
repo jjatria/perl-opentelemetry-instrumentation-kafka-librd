@@ -252,7 +252,6 @@ sub install ( $class, %config ) {
                 kind       => SPAN_KIND_PRODUCER,
                 attributes => \%attributes,
             ) => sub {
-                $DB::single = 1;
                 OpenTelemetry->propagator->inject(\%headers);
                 $self->$code( { %$params, headers => \%headers }, @rest );
             },

@@ -9,10 +9,7 @@ use Kafka::Librd;
 use OpenTelemetry;
 use OpenTelemetry::Trace::Tracer;
 use OpenTelemetry::Propagator::TraceContext;
-# use OpenTelemetry::Baggage;
 use OpenTelemetry::Constants -span;
-# use OpenTelemetry::Context;
-# use OpenTelemetry::Propagator::Baggage;
 use Syntax::Keyword::Dynamically;
 
 my @spans;

@@ -5,3 +5,4 @@
 local/
 .build/
 cover/
+OpenTelemetry-Instrumentation-Kafka-Librd*

@@ -41,6 +41,8 @@
       },
       "runtime" : {
          "requires" : {
+            "Kafka::Librd" : "0",
+            "OpenTelemetry" : "0",
             "perl" : "v5.30.0"
          }
       },
@@ -51,6 +53,8 @@
          "requires" : {
             "ExtUtils::MakeMaker" : "0",
             "File::Spec" : "0",
+            "Syntax::Keyword::Dynamically" : "0",
+            "Test2::V0" : "0",
             "Test::More" : "0",
             "perl" : "v5.30.0"
          }

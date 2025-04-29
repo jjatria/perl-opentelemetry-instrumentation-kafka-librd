@@ -1,0 +1,279 @@
+# NAME
+
+OpenTelemetry::Instrumentation::Kafka::Librd - OpenTelemetry instrumentation for Kafka::Librd
+
+# SYNOPSIS
+
+    use OpenTelemetry::Instrumentation 'Kafka::Librd';
+
+    # Or pass options to the instrumentation
+    use OpenTelemetry::Instrumentation 'Kafka::Librd' => {
+        key_uses_schema_framing => 1,
+        create_poll_span        => 0,
+    };
+
+    my $kafka = Kafka::Librd->new( ... );
+
+    ...
+
+    while(1) {
+        my $msg = $kafka->consumer_poll(1000) or next;
+
+        # Process message
+
+        $kafka->commit_message($msg);
+    }
+
+# DESCRIPTION
+
+This module can be used to instrument code using [Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd) to generate
+trace data using the [OpenTelemetry](https://metacpan.org/pod/OpenTelemetry) API. See [OpenTelemetry::Instrumentation](https://metacpan.org/pod/OpenTelemetry%3A%3AInstrumentation)
+for more details.
+
+The instrumentation provided by this module wraps around several methods in
+the Kafka::Librd classes to try to automatically generate as much telemetry
+data as possible. See below for details on what methods are wrapped and
+details about how the data they generate.
+
+## Configuration
+
+This instrumentation accepts the following configuration parameters:
+
+- create\_poll\_span
+
+    If set to a true value, a span will be created wrapping around the
+    `consumer_poll` method. This key allows this to be disabled since in most
+    consumer applications this method will be called repeatedly, and it may result
+    in noisy telemetry data.
+
+    Defaults to a true value.
+
+- create\_process\_span
+
+    If set to a true value, this instrumentation will create a span that wraps
+    around the code processing the message returned by `consumer_poll`.
+
+    Defaults to a true value.
+
+- key\_processor
+
+    If set to a sub reference, this will be called whenever the code in this
+    instrumentation wants to access a message's key. The key processor will
+    receive as its only argument the message key as it was received in the
+    message from Kafka. The processor is expected to return a value that is
+    suitable to be used as the key when generating telemetry.
+
+    The user is responsible for making sure the processor does not die. This
+    instrumentation includes no protections against this.
+
+    This option defaults to an undefined value, meaning no processor is used.
+
+- key\_uses\_schema\_framing
+
+    Kafka-based applications that use the Confluent Schema Registry (or an
+    equivalent solution) will sometimes produce messages that employ what is
+    called "schema framing". When using it, the first five bytes of the message
+    payload and/or key will not be part of the actual data, but will encode
+    information about the schema that was used to encode that particular datum.
+
+    Since this instrumentation will in some cases attach the message key to a
+    span's attributes, this option can be used to strip these five-byte headers
+    from the key before storing it in the generated span.
+
+    This option is incompatible with the ["key\_processor"](#key_processor) option, since it is
+    in effect a shortcut for installing a processor that strips the schema
+    framing.
+
+    Defaults to a false value.
+
+# WRAPPED METHODS
+
+## Kafka::Librd::consumer\_poll
+
+By default, this instrumentation will generate two spans when calling
+["consumer\_poll" in Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd#consumer_poll).
+
+### The poll span
+
+This span will wrap around the call to "consumer\_poll" itself. It can be
+disabled by setting `create_poll_span` to a false value on installation, as
+described above.
+
+If created, this span will be named `poll` and will include the following
+attributes:
+
+- `messaging.system`
+
+    Set to `kafka`.
+
+- `messaging.operation.name`
+
+    Set to `poll`.
+
+- `messaging.operation.type`
+
+    Set to `receive`.
+
+### The process span
+
+This span aims to wrap around the code processing a message. In practice, this
+will be a span that starts after `consumer_poll` receives a message, and ends
+the next time `consumer_poll` is called. This should work as expected in most
+cases, but since this span will in effect be capturing code that runs in an
+outer scope, this might not always be desired. If so, this can be disabled
+by setting `create_process_span` to a false value during installation, as
+described above.
+
+If created, this span will be named `process_$topic`, where `$topic` is the
+topic the message was received from. If the version of [Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd)
+supports reading a message's headers, this instrumentation will extract
+propagation data from the headers so the "process" span can link to the traces
+that produced the message being processed. The span will include the following
+attributes:
+
+- `messaging.system`
+
+    Set to `kafka`.
+
+- `messaging.operation.name`
+
+    Set to `process`.
+
+- `messaging.operation.type`
+
+    Set to `process`.
+
+- `messaging.destination.name`
+
+    Set to the value returned by ["topic" in Kafka::Librd::Message](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3AMessage#topic).
+
+- `messaging.kafka.offset`
+
+    Set to the value returned by ["offset" in Kafka::Librd::Message](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3AMessage#offset).
+
+- `messaging.destination.partition.id`
+
+    Set to the value returned by ["partition" in Kafka::Librd::Message](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3AMessage#partition) if this
+    returns a defined value.
+
+- `messaging.kafka.message.key`
+
+    Set to the value returned by ["key" in Kafka::Librd::Message](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3AMessage#key), possibly after
+    being processed by the ["key\_processor"](#key_processor) if one was set on installation.
+
+## Kafka::Librd::commit\_message
+
+When calling ["commit\_message" in Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd#commit_message), this instrumentation will create
+a "settle" span with the name `commit_$topic`, where `$topic` is the topic
+the message was received from. If the version of [Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd) supports
+reading headers, these will be used to read propagation data, and the span
+will be linked to the spans that produced the message being committed.
+
+The span will be created with the attributes described below:
+
+- `messaging.system`
+
+    Set to `kafka`.
+
+- `messaging.operation.name`
+
+    Set to `commit`.
+
+- `messaging.operation.type`
+
+    Set to `settle`.
+
+- `messaging.destination.name`
+
+    Set to the value returned by ["topic" in Kafka::Librd::Message](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3AMessage#topic).
+
+- `messaging.destination.partition.id`
+
+    Set to the value returned by ["partition" in Kafka::Librd::Message](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3AMessage#partition) if this
+    returns a defined value.
+
+## Kafka::Librd::producev
+
+When calling ["producev" in Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd#producev), this instrumentation will create
+a "send" span with the name `send_$topic`, where `$topic` is the topic
+the message is being sent to. Since the message headers will be modified
+to inject propagation data from the current context, this may result in
+some headers being replaced. The keys that will be used will depend on the
+propagators you've got configured.
+
+The span will be created with the attributes described below:
+
+- `messaging.system`
+
+    Set to `kafka`.
+
+- `messaging.operation.name`
+
+    Set to `send`.
+
+- `messaging.operation.type`
+
+    Set to `send`.
+
+- `messaging.destination.name`
+
+    Set to the value passed as the `topic` parameter.
+
+- `messaging.destination.partition.id`
+
+    Set to the value passed as the `partition` parameter, if set to a defined
+    value.
+
+- `messaging.kafka.message.key`
+
+    Set to the value passed as the `key` parameter, if set to a defined value,
+    possibly after being processed by the ["key\_processor"](#key_processor) if one was set on
+    installation.
+
+## Kafka::Librd::Topic::produce
+
+When calling ["produce" in Kafka::Librd::Topic](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3ATopic#produce), this instrumentation will create
+a "send" span with the name `send`. Ideally this should include the topic
+name, but at the time of writing [Kafka::Librd::Topic](https://metacpan.org/pod/Kafka%3A%3ALibrd%3A%3ATopic) does not provide a way
+to retrieve the name of the topic that it points to.
+
+Since this method does not support setting headers, no propagation data will
+be added. If supported, please consider using ["producev" in Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd#producev) instead.
+
+The span will be created with the attributes described below:
+
+- `messaging.system`
+
+    Set to `kafka`.
+
+- `messaging.operation.name`
+
+    Set to `send`.
+
+- `messaging.operation.type`
+
+    Set to `send`.
+
+- `messaging.destination.partition.id`
+
+    Set to the value passed as the `partition` parameter, if set to a defined
+    value.
+
+- `messaging.kafka.message.key`
+
+    Set to the value passed as the `key` parameter, if set to a defined value,
+    possibly after being processed by the ["key\_processor"](#key_processor) if one was set on
+    installation.
+
+# SEE ALSO
+
+- [Kafka::Librd](https://metacpan.org/pod/Kafka%3A%3ALibrd)
+- [OpenTelemetry](https://metacpan.org/pod/OpenTelemetry)
+- [OpenTelemetry::Instrumentation](https://metacpan.org/pod/OpenTelemetry%3A%3AInstrumentation)
+
+# COPYRIGHT
+
+This software is copyright (c) 2025 by José Joaquín Atria.
+
+This is free software; you can redistribute it and/or modify it under the same
+terms as the Perl 5 programming language system itself.

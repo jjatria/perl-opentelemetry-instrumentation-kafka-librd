@@ -1,7 +1,7 @@
 package OpenTelemetry::Instrumentation::Kafka::Librd;
 # ABSTRACT: OpenTelemetry instrumentation for Kafka::Librd
 
-our $VERSION = '0.000001';
+our $VERSION = '0.000002';
 
 use strict;
 use warnings;

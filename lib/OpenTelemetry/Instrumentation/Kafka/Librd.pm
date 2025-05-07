@@ -131,11 +131,8 @@ sub install ( $class, %config ) {
     # the first byte is \0 and the next four encode the ID of the schema used
     # to encode the message) then we need to strip these before recording the
     # key in the span's attributes.
-    $config{key_processor} = sub ($key) {
-        open my $fh, '<', \$key or return $key;
-        $fh->read(5);
-        do { local $/; <$fh> };
-    } if $config{key_uses_schema_framing};
+    $config{key_processor} = sub ($key) { substr $key, 5 }
+        if $config{key_uses_schema_framing};
 
     $config{create_poll_span}    //= 1;
     $config{create_process_span} //= 1;
